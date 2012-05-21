@@ -81,7 +81,8 @@ func (s *Server) loadRules(file string) error {
 	if err != nil {
 		return err
 	}
-	if fi.ModTime().Before(s.last) && s.rules != nil {
+	mtime := fi.ModTime()
+	if mtime.Before(s.last) && s.rules != nil {
 		return nil
 	}
 	s.mu.Lock()
@@ -95,6 +96,6 @@ func (s *Server) loadRules(file string) error {
 	if err != nil {
 		return err
 	}
-	s.last = time.Now()
+	s.last = mtime
 	return nil
 }
