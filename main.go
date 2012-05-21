@@ -8,23 +8,25 @@ import (
 	"net/http/httputil"
 	"os"
 	"strings"
+	"sync"
+	"time"
 )
 
 var (
-	httpAddr = flag.String("http", ":80", "http listen address")
-	ruleFile = flag.String("rules", "", "file that contains the rule definitions")
+	httpAddr     = flag.String("http", ":80", "http listen address")
+	ruleFile     = flag.String("rules", "", "file that contains the rule definitions")
+	pollInterval = flag.Duration("poll", time.Second*10, "rule file poll interval")
 )
 
 func main() {
 	flag.Parse()
-	s := new(Server)
-	if err := s.loadRules(); err != nil {
-		log.Fatal(err)
-	}
+	s := NewServer(*ruleFile, *pollInterval)
 	log.Fatal(http.ListenAndServe(*httpAddr, s))
 }
 
 type Server struct {
+	mu    sync.RWMutex
+	last  time.Time
 	rules []Rule
 }
 
@@ -36,7 +38,22 @@ type Rule struct {
 	proxy http.Handler
 }
 
+func NewServer(file string, poll time.Duration) *Server {
+	s := new(Server)
+	go func() {
+		for {
+			if err := s.loadRules(file); err != nil {
+				log.Fatal(err)
+			}
+			time.Sleep(poll)
+		}
+	}()
+	return s
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	for _, r := range s.rules {
 		h := req.Header.Get("Host")
 		if !(h == r.Host || strings.HasPrefix(h, "."+r.Host)) {
@@ -59,11 +76,25 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	http.Error(w, "Not found.", http.StatusNotFound)
 }
 
-func (s *Server) loadRules() error {
-	f, err := os.Open(*ruleFile)
+func (s *Server) loadRules(file string) error {
+	fi, err := os.Stat(file)
+	if err != nil {
+		return err
+	}
+	if fi.ModTime().Before(s.last) && s.rules != nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, err := os.Open(file)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	return json.NewDecoder(f).Decode(&s.rules)
+	err = json.NewDecoder(f).Decode(&s.rules)
+	if err != nil {
+		return err
+	}
+	s.last = time.Now()
+	return nil
 }
