@@ -114,10 +114,12 @@ func (s *Server) loadRules(file string) error {
 		return err
 	}
 	defer f.Close()
-	err = json.NewDecoder(f).Decode(&s.rules)
+	var rules []Rule
+	err = json.NewDecoder(f).Decode(&rules)
 	if err != nil {
 		return err
 	}
 	s.last = mtime
+	s.rules = rules
 	return nil
 }
