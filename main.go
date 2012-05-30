@@ -69,18 +69,25 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, r := range s.rules {
-		h := req.Header.Get("Host")
-		if !(h == r.Host || strings.HasPrefix(h, "."+r.Host)) {
+		if !(req.Host == r.Host || strings.HasPrefix(req.Host, "."+r.Host)) {
 			continue
 		}
 		if h := r.Forward; h != "" && r.proxy == nil {
 			dir := func(req *http.Request) {
 				req.URL.Host = h
 			}
+			s.mu.RUnlock()
+			s.mu.Lock()
 			r.proxy = &httputil.ReverseProxy{Director: dir}
+			s.mu.Unlock()
+			s.mu.RLock()
 		}
 		if d := r.Static; d != "" && r.proxy == nil {
+			s.mu.RUnlock()
+			s.mu.Lock()
 			r.proxy = http.FileServer(http.Dir(d))
+			s.mu.Unlock()
+			s.mu.RLock()
 		}
 		if r.proxy != nil {
 			r.proxy.ServeHTTP(w, req)
