@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"os"
@@ -13,6 +14,7 @@ import (
 )
 
 var (
+	fd           = flag.Int("fd", 0, "file descriptor to listen on")
 	httpAddr     = flag.String("http", ":80", "http listen address")
 	ruleFile     = flag.String("rules", "", "file that contains the rule definitions")
 	pollInterval = flag.Duration("poll", time.Second*10, "rule file poll interval")
@@ -20,8 +22,20 @@ var (
 
 func main() {
 	flag.Parse()
+
+	var l net.Listener
+	var err error
+	if *fd >= 3 {
+		l, err = net.FileListener(os.NewFile(uintptr(*fd), "http"))
+	} else {
+		l, err = net.Listen("tcp", *httpAddr)
+	}
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	s := NewServer(*ruleFile, *pollInterval)
-	log.Fatal(http.ListenAndServe(*httpAddr, s))
+	log.Fatal(http.Serve(l, s))
 }
 
 type Server struct {
