@@ -67,34 +67,35 @@ func NewServer(file string, poll time.Duration) *Server {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	for _, r := range s.rules {
 		if !(req.Host == r.Host || strings.HasSuffix(req.Host, "."+r.Host)) {
 			continue
 		}
-		if h := r.Forward; h != "" && r.proxy == nil {
+		proxy := r.proxy
+		if h := r.Forward; h != "" && proxy == nil {
 			dir := func(req *http.Request) {
 				req.URL.Scheme = "http"
 				req.URL.Host = h
 			}
-			s.mu.RUnlock()
-			s.mu.Lock()
-			r.proxy = &httputil.ReverseProxy{Director: dir}
-			s.mu.Unlock()
-			s.mu.RLock()
+			proxy = &httputil.ReverseProxy{Director: dir}
 		}
-		if d := r.Static; d != "" && r.proxy == nil {
-			s.mu.RUnlock()
-			s.mu.Lock()
-			r.proxy = http.FileServer(http.Dir(d))
-			s.mu.Unlock()
-			s.mu.RLock()
+		if d := r.Static; d != "" && proxy == nil {
+			proxy = http.FileServer(http.Dir(d))
 		}
-		if r.proxy != nil {
-			r.proxy.ServeHTTP(w, req)
+		if proxy != nil {
+			update := r.proxy == nil
+			s.mu.RUnlock()
+			if update {
+				s.mu.Lock()
+				r.proxy = proxy
+				s.mu.Unlock()
+			}
+			proxy.ServeHTTP(w, req)
 			return
 		}
+		break
 	}
+	s.mu.RUnlock()
 	http.Error(w, "Not found.", http.StatusNotFound)
 }
 
