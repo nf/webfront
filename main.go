@@ -69,11 +69,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, r := range s.rules {
-		if !(req.Host == r.Host || strings.HasPrefix(req.Host, "."+r.Host)) {
+		if !(req.Host == r.Host || strings.HasSuffix(req.Host, "."+r.Host)) {
 			continue
 		}
 		if h := r.Forward; h != "" && r.proxy == nil {
 			dir := func(req *http.Request) {
+				req.URL.Scheme = "http"
 				req.URL.Host = h
 			}
 			s.mu.RUnlock()
