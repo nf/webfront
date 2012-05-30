@@ -72,15 +72,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			continue
 		}
 		proxy := r.proxy
-		if h := r.Forward; h != "" && proxy == nil {
-			dir := func(req *http.Request) {
-				req.URL.Scheme = "http"
-				req.URL.Host = h
+		if proxy == nil {
+			if h := r.Forward; h != "" {
+				dir := func(req *http.Request) {
+					req.URL.Scheme = "http"
+					req.URL.Host = h
+				}
+				proxy = &httputil.ReverseProxy{Director: dir}
 			}
-			proxy = &httputil.ReverseProxy{Director: dir}
-		}
-		if d := r.Static; d != "" && proxy == nil {
-			proxy = http.FileServer(http.Dir(d))
+			if d := r.Static; d != "" {
+				proxy = http.FileServer(http.Dir(d))
+			}
 		}
 		if proxy != nil {
 			update := r.proxy == nil
