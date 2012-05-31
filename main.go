@@ -35,6 +35,8 @@ Usage of webfront:
   -http=":80": HTTP listen address
   -poll=10s: file poll interval
   -rules="": rule definition file
+
+webfront was written by Andrew Gerrand <adg@golang.org>
 */
 package main
 
