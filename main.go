@@ -1,3 +1,41 @@
+/*
+Copyright 2011 Google Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+/*
+webfront is an HTTP reverse-proxy.
+
+It reads a JSON-formatted rule like this:
+
+[
+	{"Host": "example.com", "Serve": "/var/www"},
+	{"Host": "example.org", "Forward": "localhost:8080"}
+]
+
+For all requests to the host example.com (or a host name ending in
+".example.com") it serves files from the /var/www directory.
+
+For requests to example.org, it forwards the request to the HTTP
+server listening on localhost port 8080.
+
+Usage of webfront:
+  -fd=0: file descriptor to listen on
+  -http=":80": HTTP listen address
+  -poll=10s: file poll interval
+  -rules="": rule definition file
+*/
 package main
 
 import (
@@ -15,9 +53,9 @@ import (
 
 var (
 	fd           = flag.Int("fd", 0, "file descriptor to listen on")
-	httpAddr     = flag.String("http", ":80", "http listen address")
-	ruleFile     = flag.String("rules", "", "file that contains the rule definitions")
-	pollInterval = flag.Duration("poll", time.Second*10, "rule file poll interval")
+	httpAddr     = flag.String("http", ":80", "HTTP listen address")
+	ruleFile     = flag.String("rules", "", "rule definition file")
+	pollInterval = flag.Duration("poll", time.Second*10, "file poll interval")
 )
 
 func main() {
@@ -41,13 +79,13 @@ func main() {
 type Server struct {
 	mu    sync.RWMutex
 	last  time.Time
-	rules []Rule
+	rules []*Rule
 }
 
 type Rule struct {
 	Host    string
 	Forward string
-	Static  string
+	Serve   string
 
 	proxy http.Handler
 }
@@ -67,34 +105,20 @@ func NewServer(file string, poll time.Duration) *Server {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	s.mu.RLock()
+	h := req.Host
+	if i := strings.Index(h, ":"); i >= 0 {
+		h = h[:i]
+	}
 	for _, r := range s.rules {
-		if !(req.Host == r.Host || strings.HasSuffix(req.Host, "."+r.Host)) {
+		if !(h == r.Host || strings.HasSuffix(h, "."+r.Host)) {
 			continue
 		}
-		proxy := r.proxy
-		if proxy == nil {
-			if h := r.Forward; h != "" {
-				dir := func(req *http.Request) {
-					req.URL.Scheme = "http"
-					req.URL.Host = h
-				}
-				proxy = &httputil.ReverseProxy{Director: dir}
-			}
-			if d := r.Static; d != "" {
-				proxy = http.FileServer(http.Dir(d))
-			}
-		}
-		if proxy != nil {
-			update := r.proxy == nil
+		if p := r.proxy; p != nil {
 			s.mu.RUnlock()
-			if update {
-				s.mu.Lock()
-				r.proxy = proxy
-				s.mu.Unlock()
-			}
-			proxy.ServeHTTP(w, req)
+			p.ServeHTTP(w, req)
 			return
 		}
+		log.Printf("nil proxy: %#v", r)
 		break
 	}
 	s.mu.RUnlock()
@@ -117,12 +141,25 @@ func (s *Server) loadRules(file string) error {
 		return err
 	}
 	defer f.Close()
-	var rules []Rule
+	var rules []*Rule
 	err = json.NewDecoder(f).Decode(&rules)
 	if err != nil {
 		return err
 	}
 	s.last = mtime
 	s.rules = rules
+	for _, r := range s.rules {
+		if h := r.Forward; h != "" {
+			r.proxy = &httputil.ReverseProxy{
+				Director: func(req *http.Request) {
+					req.URL.Scheme = "http"
+					req.URL.Host = h
+				},
+			}
+		}
+		if d := r.Serve; d != "" {
+			r.proxy = http.FileServer(http.Dir(d))
+		}
+	}
 	return nil
 }
