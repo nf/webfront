@@ -17,14 +17,14 @@ limitations under the License.
 /*
 webfront is an HTTP reverse-proxy.
 
-It reads a JSON-formatted rule like this:
+It reads a JSON-formatted rule file like this:
 
 [
 	{"Host": "example.com", "Serve": "/var/www"},
 	{"Host": "example.org", "Forward": "localhost:8080"}
 ]
 
-For all requests to the host example.com (or a host name ending in
+For all requests to the host example.com (or any name ending in
 ".example.com") it serves files from the /var/www directory.
 
 For requests to example.org, it forwards the request to the HTTP
@@ -136,8 +136,6 @@ func (s *Server) loadRules(file string) error {
 	if mtime.Before(s.last) && s.rules != nil {
 		return nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	f, err := os.Open(file)
 	if err != nil {
 		return err
@@ -148,9 +146,7 @@ func (s *Server) loadRules(file string) error {
 	if err != nil {
 		return err
 	}
-	s.last = mtime
-	s.rules = rules
-	for _, r := range s.rules {
+	for _, r := range rules {
 		if h := r.Forward; h != "" {
 			r.proxy = &httputil.ReverseProxy{
 				Director: func(req *http.Request) {
@@ -163,5 +159,9 @@ func (s *Server) loadRules(file string) error {
 			r.proxy = http.FileServer(http.Dir(d))
 		}
 	}
+	s.mu.Lock()
+	s.last = mtime
+	s.rules = rules
+	s.mu.Unlock()
 	return nil
 }
