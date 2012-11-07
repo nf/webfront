@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 /*
-webfront is an HTTP reverse-proxy.
+webfront is an HTTP server and reverse proxy.
 
 It reads a JSON-formatted rule file like this:
 
@@ -74,59 +74,83 @@ func main() {
 		log.Fatal(err)
 	}
 
-	s := NewServer(*ruleFile, *pollInterval)
+	s, err := NewServer(*ruleFile, *pollInterval)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	log.Fatal(http.Serve(l, s))
 }
 
+// Server implements an http.Handler that acts as either a reverse proxy or
+// a simple file server, as determined by a rule set.
 type Server struct {
 	mu    sync.RWMutex
 	last  time.Time
 	rules []*Rule
 }
 
+// Rule represents a rule in a configuration file.
 type Rule struct {
-	Host    string
-	Forward string
-	Serve   string
+	Host    string // to match against request Host header
+	Forward string // non-empty if reverse proxy
+	Serve   string // non-empty if file server
 
-	proxy http.Handler
+	handler http.Handler
 }
 
-func NewServer(file string, poll time.Duration) *Server {
+// NewServer constructs a Server that reads rules from file with a period
+// specified by poll.
+func NewServer(file string, poll time.Duration) (*Server, error) {
 	s := new(Server)
-	go func() {
-		for {
-			if err := s.loadRules(file); err != nil {
-				log.Fatal(err)
-			}
-			time.Sleep(poll)
-		}
-	}()
-	return s
+	if err := s.loadRules(file); err != nil {
+		return nil, err
+	}
+	go s.refreshRules(file, poll)
+	return s, nil
 }
 
-func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+// ServeHTTP matches the Request with a Rule and, if found, serves the
+// request with the Rule's handler.
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h := s.handler(r); h != nil {
+		h.ServeHTTP(w, r)
+		return
+	}
+	http.Error(w, "Not found.", http.StatusNotFound)
+}
+
+// handler returns the appropriate Handler for the given Request,
+// or nil if none found.
+func (s *Server) handler(req *http.Request) http.Handler {
 	s.mu.RLock()
+	defer s.mu.RUnlock()
 	h := req.Host
+	// Some clients include a port in the request host; strip it.
 	if i := strings.Index(h, ":"); i >= 0 {
 		h = h[:i]
 	}
 	for _, r := range s.rules {
-		if !(h == r.Host || strings.HasSuffix(h, "."+r.Host)) {
-			continue
+		if h == r.Host || strings.HasSuffix(h, "."+r.Host) {
+			return r.handler
 		}
-		if p := r.proxy; p != nil {
-			s.mu.RUnlock()
-			p.ServeHTTP(w, req)
-			return
-		}
-		log.Printf("nil proxy: %#v", r)
-		break
 	}
-	s.mu.RUnlock()
-	http.Error(w, "Not found.", http.StatusNotFound)
+	return nil
 }
 
+// refreshRules polls file periodically and refreshes the Server's rule
+// set if the file has been modified.
+func (s *Server) refreshRules(file string, poll time.Duration) {
+	for {
+		if err := s.loadRules(file); err != nil {
+			log.Println(err)
+		}
+		time.Sleep(poll)
+	}
+}
+
+// loadRules tests whether file has been modified since its last invocation
+// and, if so, loads the rule set from file.
 func (s *Server) loadRules(file string) error {
 	fi, err := os.Stat(file)
 	if err != nil {
@@ -134,34 +158,52 @@ func (s *Server) loadRules(file string) error {
 	}
 	mtime := fi.ModTime()
 	if mtime.Before(s.last) && s.rules != nil {
-		return nil
+		return nil // no change
 	}
-	f, err := os.Open(file)
+	rules, err := parseRules(file)
 	if err != nil {
 		return err
-	}
-	defer f.Close()
-	var rules []*Rule
-	err = json.NewDecoder(f).Decode(&rules)
-	if err != nil {
-		return err
-	}
-	for _, r := range rules {
-		if h := r.Forward; h != "" {
-			r.proxy = &httputil.ReverseProxy{
-				Director: func(req *http.Request) {
-					req.URL.Scheme = "http"
-					req.URL.Host = h
-				},
-			}
-		}
-		if d := r.Serve; d != "" {
-			r.proxy = http.FileServer(http.Dir(d))
-		}
 	}
 	s.mu.Lock()
 	s.last = mtime
 	s.rules = rules
 	s.mu.Unlock()
+	return nil
+}
+
+// parseRules reads rule definitions from file, constructs the Rule handlers,
+// and returns the resultant Rules.
+func parseRules(file string) ([]*Rule, error) {
+	f, err := os.Open(file)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var rules []*Rule
+	if err := json.NewDecoder(f).Decode(&rules); err != nil {
+		return nil, err
+	}
+	for _, r := range rules {
+		r.handler = makeHandler(r)
+		if r.handler == nil {
+			log.Printf("bad rule: %#v", r)
+		}
+	}
+	return rules, nil
+}
+
+// makeHandler constructs the appropriate Handler for the given Rule.
+func makeHandler(r *Rule) http.Handler {
+	if h := r.Forward; h != "" {
+		return &httputil.ReverseProxy{
+			Director: func(req *http.Request) {
+				req.URL.Scheme = "http"
+				req.URL.Host = h
+			},
+		}
+	}
+	if d := r.Serve; d != "" {
+		return http.FileServer(http.Dir(d))
+	}
 	return nil
 }
