@@ -85,7 +85,7 @@ func main() {
 // Server implements an http.Handler that acts as either a reverse proxy or
 // a simple file server, as determined by a rule set.
 type Server struct {
-	mu    sync.RWMutex
+	mu    sync.RWMutex // guards the fields below
 	last  time.Time
 	rules []*Rule
 }
