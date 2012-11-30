@@ -68,7 +68,10 @@ var (
 
 func main() {
 	flag.Parse()
-	s := NewServer(*ruleFile, *pollInterval)
+	s, err := NewServer(*ruleFile, *pollInterval)
+	if err != nil {
+		log.Fatal(err)
+	}
 	httpFD, _ := strconv.Atoi(os.Getenv("RUNSIT_PORTFD_http"))
 	httpsFD, _ := strconv.Atoi(os.Getenv("RUNSIT_PORTFD_https"))
 	if httpsFD >= 3 || *httpsAddr != "" {
