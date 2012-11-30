@@ -31,8 +31,10 @@ For requests to example.org, it forwards the request to the HTTP
 server listening on localhost port 8080.
 
 Usage of webfront:
-  -fd=0: file descriptor to listen on
   -http=":80": HTTP listen address
+  -https="": HTTPS listen address (leave empty to disable)
+  -https_cert="": HTTPS certificate file
+  -https_key="": HTTPS key file
   -poll=10s: file poll interval
   -rules="": rule definition file
 
@@ -41,6 +43,7 @@ webfront was written by Andrew Gerrand <adg@golang.org>
 package main
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"log"
@@ -48,34 +51,52 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 var (
-	fd           = flag.Int("fd", 0, "file descriptor to listen on")
 	httpAddr     = flag.String("http", ":80", "HTTP listen address")
+	httpsAddr    = flag.String("https", "", "HTTPS listen address (leave empty to disable)")
+	certFile     = flag.String("https_cert", "", "HTTPS certificate file")
+	keyFile      = flag.String("https_key", "", "HTTPS key file")
 	ruleFile     = flag.String("rules", "", "rule definition file")
 	pollInterval = flag.Duration("poll", time.Second*10, "file poll interval")
 )
 
 func main() {
 	flag.Parse()
+	s := NewServer(*ruleFile, *pollInterval)
+	httpFD, _ := strconv.Atoi(os.Getenv("RUNSIT_PORTFD_http"))
+	httpsFD, _ := strconv.Atoi(os.Getenv("RUNSIT_PORTFD_https"))
+	if httpsFD >= 3 || *httpsAddr != "" {
+		cert, err := tls.LoadX509KeyPair(*certFile, *keyFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		c := &tls.Config{Certificates: []tls.Certificate{cert}}
+		l := tls.NewListener(listen(httpsFD, *httpsAddr), c)
+		go func() {
+			log.Fatal(http.Serve(l, s))
+		}()
+	}
+	log.Fatal(http.Serve(listen(httpFD, *httpAddr), s))
+}
 
+func listen(fd int, addr string) net.Listener {
 	var l net.Listener
 	var err error
-	if *fd >= 3 {
-		l, err = net.FileListener(os.NewFile(uintptr(*fd), "http"))
+	if fd >= 3 {
+		l, err = net.FileListener(os.NewFile(uintptr(fd), "http"))
 	} else {
-		l, err = net.Listen("tcp", *httpAddr)
+		l, err = net.Listen("tcp", addr)
 	}
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	s := NewServer(*ruleFile, *pollInterval)
-	log.Fatal(http.Serve(l, s))
+	return l
 }
 
 type Server struct {
