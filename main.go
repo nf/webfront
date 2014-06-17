@@ -19,10 +19,10 @@ webfront is an HTTP server and reverse proxy.
 
 It reads a JSON-formatted rule file like this:
 
-[
-	{"Host": "example.com", "Serve": "/var/www"},
-	{"Host": "example.org", "Forward": "localhost:8080"}
-]
+	[
+		{"Host": "example.com", "Serve": "/var/www"},
+		{"Host": "example.org", "Forward": "localhost:8080"}
+	]
 
 For all requests to the host example.com (or any name ending in
 ".example.com") it serves files from the /var/www directory.
