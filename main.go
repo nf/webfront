@@ -55,7 +55,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"rsc.io/letsencrypt"
@@ -107,9 +107,8 @@ func listen(fd int, addr string) net.Listener {
 // Server implements an http.Handler that acts as either a reverse proxy or
 // a simple file server, as determined by a rule set.
 type Server struct {
-	mu    sync.RWMutex // guards the fields below
+	rules atomic.Value
 	last  time.Time
-	rules []*Rule
 }
 
 // Rule represents a rule in a configuration file.
@@ -145,14 +144,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // handler returns the appropriate Handler for the given Request,
 // or nil if none found.
 func (s *Server) handler(req *http.Request) http.Handler {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	h := req.Host
 	// Some clients include a port in the request host; strip it.
 	if i := strings.Index(h, ":"); i >= 0 {
 		h = h[:i]
 	}
-	for _, r := range s.rules {
+	rules := s.rules.Load().([]*Rule)
+	for _, r := range rules {
 		if h == r.Host || strings.HasSuffix(h, "."+r.Host) {
 			return r.handler
 		}
@@ -179,17 +177,17 @@ func (s *Server) loadRules(file string) error {
 		return err
 	}
 	mtime := fi.ModTime()
-	if !mtime.After(s.last) && s.rules != nil {
+	if !mtime.After(s.last) && s.rules.Load() != nil {
 		return nil // no change
 	}
 	rules, err := parseRules(file)
 	if err != nil {
 		return err
 	}
-	s.mu.Lock()
-	s.last = mtime
-	s.rules = rules
-	s.mu.Unlock()
+	if rules != nil {
+		s.last = mtime
+		s.rules.Store(rules)
+	}
 	return nil
 }
 
