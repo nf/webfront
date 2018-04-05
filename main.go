@@ -45,9 +45,11 @@ webfront was written by Andrew Gerrand <adg@golang.org>
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -80,9 +82,9 @@ func main() {
 	var h http.Handler = s
 	if *letsCacheDir != "" {
 		m := &autocert.Manager{
-			Cache:  autocert.DirCache(*letsCacheDir),
-			Prompt: autocert.AcceptTOS,
-			// TODO(adg): host policy based on ruleset
+			Cache:      autocert.DirCache(*letsCacheDir),
+			Prompt:     autocert.AcceptTOS,
+			HostPolicy: s.hostPolicy,
 		}
 		c := tls.Config{GetCertificate: m.GetCertificate}
 		l := tls.NewListener(listen(httpsFD, ":https"), &c)
@@ -195,6 +197,20 @@ func (s *Server) loadRules(file string) error {
 	s.rules = rules
 	s.mu.Unlock()
 	return nil
+}
+
+// hostPolicy implements autocert.HostPolicy by consulting
+// the rules list for a matching host name.
+func (s *Server) hostPolicy(ctx context.Context, host string) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, rule := range s.rules {
+		if host == rule.Host || host == "www."+rule.Host {
+			return nil
+		}
+	}
+	return fmt.Errorf("unrecognized host %q", host)
 }
 
 // parseRules reads rule definitions from file, constructs the Rule handlers,
