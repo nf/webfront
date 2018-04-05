@@ -31,14 +31,14 @@ For requests to example.org, it forwards the request to the HTTP
 server listening on localhost port 8080.
 
 Usage of webfront:
-  -http string
-    HTTP listen address (default ":http")
-  -letsencrypt_cache string
-    letsencrypt cache file (default is to disable HTTPS)
-  -poll duration
-    file poll interval (default 10s)
-  -rules string
-    rule definition file
+  -http address
+    	HTTP listen address (default ":http")
+  -letsencrypt_cache directory
+    	letsencrypt cache directory (default is to disable HTTPS)
+  -poll interval
+    	rule file poll interval (default 10s)
+  -rules file
+    	rule definition file
 
 webfront was written by Andrew Gerrand <adg@golang.org>
 */
@@ -58,14 +58,14 @@ import (
 	"sync"
 	"time"
 
-	"rsc.io/letsencrypt"
+	"golang.org/x/crypto/acme/autocert"
 )
 
 var (
-	httpAddr      = flag.String("http", ":http", "HTTP listen address")
-	letsCacheFile = flag.String("letsencrypt_cache", "", "letsencrypt cache file (default is to disable HTTPS)")
-	ruleFile      = flag.String("rules", "", "rule definition file")
-	pollInterval  = flag.Duration("poll", time.Second*10, "file poll interval")
+	httpAddr     = flag.String("http", ":http", "HTTP listen `address`")
+	letsCacheDir = flag.String("letsencrypt_cache", "", "letsencrypt cache `directory` (default is to disable HTTPS)")
+	ruleFile     = flag.String("rules", "", "rule definition `file`")
+	pollInterval = flag.Duration("poll", time.Second*10, "rule file poll `interval`")
 )
 
 func main() {
@@ -76,18 +76,22 @@ func main() {
 	}
 	httpFD, _ := strconv.Atoi(os.Getenv("RUNSIT_PORTFD_http"))
 	httpsFD, _ := strconv.Atoi(os.Getenv("RUNSIT_PORTFD_https"))
-	if *letsCacheFile != "" {
-		var m letsencrypt.Manager
-		if err := m.CacheFile(*letsCacheFile); err != nil {
-			log.Fatal(err)
+
+	var h http.Handler = s
+	if *letsCacheDir != "" {
+		m := &autocert.Manager{
+			Cache:  autocert.DirCache(*letsCacheDir),
+			Prompt: autocert.AcceptTOS,
+			// TODO(adg): host policy based on ruleset
 		}
 		c := tls.Config{GetCertificate: m.GetCertificate}
 		l := tls.NewListener(listen(httpsFD, ":https"), &c)
 		go func() {
-			log.Fatal(http.Serve(l, s))
+			log.Fatal(http.Serve(l, h))
 		}()
+		h = m.HTTPHandler(h)
 	}
-	log.Fatal(http.Serve(listen(httpFD, *httpAddr), s))
+	log.Fatal(http.Serve(listen(httpFD, *httpAddr), h))
 }
 
 func listen(fd int, addr string) net.Listener {
