@@ -68,32 +68,44 @@ var (
 	letsCacheDir = flag.String("letsencrypt_cache", "", "letsencrypt cache `directory` (default is to disable HTTPS)")
 	ruleFile     = flag.String("rules", "", "rule definition `file`")
 	pollInterval = flag.Duration("poll", time.Second*10, "rule file poll `interval`")
+	port         = flag.Int("https_port", 443, "HTTPS port to serve on (default to 443)")
 )
 
 func main() {
+
+	// Parse the flags
 	flag.Parse()
-	s, err := NewServer(*ruleFile, *pollInterval)
+
+	// Initialize
+	log.Println("Server is starting...")
+
+	// Create the proxy handler
+	proxyServer, err := NewServer(*ruleFile, *pollInterval)
 	if err != nil {
 		log.Fatal(err)
 	}
-	httpFD, _ := strconv.Atoi(os.Getenv("RUNSIT_PORTFD_http"))
-	httpsFD, _ := strconv.Atoi(os.Getenv("RUNSIT_PORTFD_https"))
 
-	var h http.Handler = s
-	if *letsCacheDir != "" {
-		m := &autocert.Manager{
-			Cache:      autocert.DirCache(*letsCacheDir),
+	// Serve locally with https on debug mode or with let's encrypt on production mode
+	if *letsCacheDir == "" {
+		log.Fatal(http.ListenAndServeTLS(":"+strconv.Itoa(*port), "./dev_certificates/localhost.crt", "./dev_certificates/localhost.key", logMiddleware(proxyServer)))
+	} else {
+		certManager := autocert.Manager{
 			Prompt:     autocert.AcceptTOS,
-			HostPolicy: s.hostPolicy,
+			Cache:      autocert.DirCache(*letsCacheDir),
+			HostPolicy: proxyServer.hostPolicy,
 		}
-		c := tls.Config{GetCertificate: m.GetCertificate}
-		l := tls.NewListener(listen(httpsFD, ":https"), &c)
-		go func() {
-			log.Fatal(http.Serve(l, h))
-		}()
-		h = m.HTTPHandler(h)
+
+		server := &http.Server{
+			Addr:    ":" + strconv.Itoa(*port),
+			Handler: logMiddleware(proxyServer),
+			TLSConfig: &tls.Config{
+				GetCertificate: certManager.GetCertificate,
+			},
+		}
+
+		go http.ListenAndServe(":80", certManager.HTTPHandler(nil))
+		server.ListenAndServeTLS("", "")
 	}
-	log.Fatal(http.Serve(listen(httpFD, *httpAddr), h))
 }
 
 func listen(fd int, addr string) net.Listener {
@@ -206,7 +218,7 @@ func (s *Server) hostPolicy(ctx context.Context, host string) error {
 	defer s.mu.RUnlock()
 
 	for _, rule := range s.rules {
-		if host == rule.Host || host == "www."+rule.Host {
+		if host == rule.Host || strings.HasSuffix(host, rule.Host) {
 			return nil
 		}
 	}
@@ -239,8 +251,25 @@ func makeHandler(r *Rule) http.Handler {
 	if h := r.Forward; h != "" {
 		return &httputil.ReverseProxy{
 			Director: func(req *http.Request) {
-				req.URL.Scheme = "http"
-				req.URL.Host = h
+				// Set the correct scheme and host to the request
+				if !strings.HasPrefix(h, "http") {
+					req.URL.Scheme = "http"
+					req.URL.Host = h
+				} else {
+					hSplit := strings.Split(h, "://")
+					req.URL.Scheme = hSplit[0]
+					req.URL.Host = hSplit[1]
+				}
+			},
+			ModifyResponse: func(res *http.Response) error {
+				// Alter the redirect location only if the redirection is made to private host
+				u, err := res.Location()
+				if err == nil && !strings.HasSuffix(u.Host, r.Host) {
+					u.Scheme = "https"
+					u.Host = r.Host + ":" + strconv.Itoa(*port)
+					res.Header.Set("Location", u.String())
+				}
+				return nil
 			},
 		}
 	}
@@ -248,4 +277,13 @@ func makeHandler(r *Rule) http.Handler {
 		return http.FileServer(http.Dir(d))
 	}
 	return nil
+}
+
+func logMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			log.Println(r.Method, r.URL.Path, r.RemoteAddr, r.UserAgent())
+		}()
+		next.ServeHTTP(w, r)
+	})
 }

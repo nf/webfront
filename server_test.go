@@ -31,9 +31,17 @@ func TestServer(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(testHandler))
 	defer target.Close()
 
+	redirectLocalTarget := httptest.NewServer(http.HandlerFunc(testRedirectLocalHandler))
+	defer redirectLocalTarget.Close()
+
+	redirectGlobalTarget := httptest.NewServer(http.HandlerFunc(testRedirectGlobalHandler))
+	defer redirectGlobalTarget.Close()
+
 	ruleFile := writeRules([]*Rule{
 		{Host: "example.com", Forward: target.Listener.Addr().String()},
 		{Host: "example.org", Serve: "testdata"},
+		{Host: "example.localredirect", Forward: redirectLocalTarget.Listener.Addr().String()},
+		{Host: "example.globalredirect", Forward: redirectGlobalTarget.Listener.Addr().String()},
 	})
 	defer os.Remove(ruleFile)
 
@@ -66,10 +74,40 @@ func TestServer(t *testing.T) {
 			t.Errorf("%s: body = %q, want %q", test.url, g, w)
 		}
 	}
+
+	var redirectTests = []struct {
+		url      string
+		code     int
+		location string
+	}{
+		{"http://example.localredirect/", 302, "https://example.localredirect:443"},
+		{"http://example.globalredirect/", 302, "https://global.example.globalredirect"},
+	}
+
+	for _, test := range redirectTests {
+		rw := httptest.NewRecorder()
+		rw.Body = new(bytes.Buffer)
+		req, _ := http.NewRequest("GET", test.url, nil)
+		s.ServeHTTP(rw, req)
+		if g, w := rw.Code, test.code; g != w {
+			t.Errorf("%s: code = %d, want %d", test.url, g, w)
+		}
+		if g, w := rw.Header().Get("Location"), test.location; g != w {
+			t.Errorf("%s: location header = %q, want %q", test.url, g, w)
+		}
+	}
 }
 
 func testHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK"))
+}
+
+func testRedirectLocalHandler(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "http://a.local.adress", http.StatusFound)
+}
+
+func testRedirectGlobalHandler(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "https://global."+r.Host, http.StatusFound)
 }
 
 func writeRules(rules []*Rule) (name string) {
