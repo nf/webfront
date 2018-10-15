@@ -218,7 +218,7 @@ func (s *Server) hostPolicy(ctx context.Context, host string) error {
 	defer s.mu.RUnlock()
 
 	for _, rule := range s.rules {
-		if host == rule.Host || host == "www."+rule.Host {
+		if host == rule.Host || strings.HasSuffix(host, rule.Host) {
 			return nil
 		}
 	}
@@ -251,8 +251,25 @@ func makeHandler(r *Rule) http.Handler {
 	if h := r.Forward; h != "" {
 		return &httputil.ReverseProxy{
 			Director: func(req *http.Request) {
-				req.URL.Scheme = "http"
-				req.URL.Host = h
+				// Set the correct scheme and host to the request
+				if !strings.HasPrefix(h, "http") {
+					req.URL.Scheme = "http"
+					req.URL.Host = h
+				} else {
+					hSplit := strings.Split(h, "://")
+					req.URL.Scheme = hSplit[0]
+					req.URL.Host = hSplit[1]
+				}
+			},
+			ModifyResponse: func(res *http.Response) error {
+				// Alter the redirect location only if the redirection is made to private host
+				u, err := res.Location()
+				if err == nil && !strings.HasSuffix(u.Host, r.Host) {
+					u.Scheme = "https"
+					u.Host = r.Host + ":" + strconv.Itoa(*port)
+					res.Header.Set("Location", u.String())
+				}
+				return nil
 			},
 		}
 	}
