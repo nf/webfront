@@ -51,35 +51,50 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/crypto/acme/autocert"
 )
 
 var (
 	httpAddr     = flag.String("http", ":http", "HTTP listen `address`")
+	metricsAddr  = flag.String("metrics", "", "metrics HTTP listen `address`")
 	letsCacheDir = flag.String("letsencrypt_cache", "", "letsencrypt cache `directory` (default is to disable HTTPS)")
 	ruleFile     = flag.String("rules", "", "rule definition `file`")
 	pollInterval = flag.Duration("poll", time.Second*10, "rule file poll `interval`")
 )
 
+var hitCounter = prometheus.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "webfront_hits",
+		Help: "Cumulative hits since startup.",
+	},
+	[]string{"host"},
+)
+
+func init() {
+	prometheus.MustRegister(hitCounter)
+}
+
 func main() {
 	flag.Parse()
+
 	s, err := NewServer(*ruleFile, *pollInterval)
 	if err != nil {
 		log.Fatal(err)
 	}
-	httpFD, _ := strconv.Atoi(os.Getenv("RUNSIT_PORTFD_http"))
-	httpsFD, _ := strconv.Atoi(os.Getenv("RUNSIT_PORTFD_https"))
-
-	var h http.Handler = s
+	if *metricsAddr != "" {
+		go func() {
+			log.Fatal(http.ListenAndServe(*metricsAddr, promhttp.Handler()))
+		}()
+	}
 	if *letsCacheDir != "" {
 		m := &autocert.Manager{
 			Cache:      autocert.DirCache(*letsCacheDir),
@@ -87,27 +102,17 @@ func main() {
 			HostPolicy: s.hostPolicy,
 		}
 		c := tls.Config{GetCertificate: m.GetCertificate}
-		l := tls.NewListener(listen(httpsFD, ":https"), &c)
+		l, err := tls.Listen("tcp", ":https", &c)
+		if err != nil {
+			log.Fatal(err)
+		}
 		go func() {
-			log.Fatal(http.Serve(l, h))
+			log.Fatal(http.Serve(l, s))
 		}()
-		h = m.HTTPHandler(h)
-	}
-	log.Fatal(http.Serve(listen(httpFD, *httpAddr), h))
-}
-
-func listen(fd int, addr string) net.Listener {
-	var l net.Listener
-	var err error
-	if fd >= 3 {
-		l, err = net.FileListener(os.NewFile(uintptr(fd), "http"))
+		log.Fatal(http.ListenAndServe(*httpAddr, m.HTTPHandler(s)))
 	} else {
-		l, err = net.Listen("tcp", addr)
+		log.Fatal(http.ListenAndServe(*httpAddr, s))
 	}
-	if err != nil {
-		log.Fatal(err)
-	}
-	return l
 }
 
 // Server implements an http.Handler that acts as either a reverse proxy or
@@ -160,6 +165,7 @@ func (s *Server) handler(req *http.Request) http.Handler {
 	}
 	for _, r := range s.rules {
 		if h == r.Host || strings.HasSuffix(h, "."+r.Host) {
+			hitCounter.With(prometheus.Labels{"host": r.Host}).Inc()
 			return r.handler
 		}
 	}
