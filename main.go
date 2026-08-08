@@ -20,25 +20,27 @@ webfront is an HTTP server and reverse proxy.
 It reads a JSON-formatted rule file like this:
 
 	[
-		{"Host": "example.com", "Serve": "/var/www"},
+		{"Host": "example.com", "Serve": "/var/www", "Exclude": [".git"]},
 		{"Host": "example.org", "Forward": "localhost:8080"}
 	]
 
 For all requests to the host example.com (or any name ending in
-".example.com") it serves files from the /var/www directory.
+".example.com") it serves files from the /var/www directory. Files or
+directories named in Exclude are not served, at any depth.
 
 For requests to example.org, it forwards the request to the HTTP
 server listening on localhost port 8080.
 
 Usage of webfront:
-  -http address
-    	HTTP listen address (default ":http")
-  -letsencrypt_cache directory
-    	letsencrypt cache directory (default is to disable HTTPS)
-  -poll interval
-    	rule file poll interval (default 10s)
-  -rules file
-    	rule definition file
+
+	-http address
+		HTTP listen address (default ":http")
+	-letsencrypt_cache directory
+		letsencrypt cache directory (default is to disable HTTPS)
+	-poll interval
+		rule file poll interval (default 10s)
+	-rules file
+		rule definition file
 
 webfront was written by Andrew Gerrand <adg@golang.org>
 */
@@ -125,9 +127,10 @@ type Server struct {
 
 // Rule represents a rule in a configuration file.
 type Rule struct {
-	Host    string // to match against request Host header
-	Forward string // non-empty if reverse proxy
-	Serve   string // non-empty if file server
+	Host    string   // to match against request Host header
+	Forward string   // non-empty if reverse proxy
+	Serve   string   // non-empty if file server
+	Exclude []string // file or directory names not to serve
 
 	handler http.Handler
 }
@@ -251,7 +254,21 @@ func makeHandler(r *Rule) http.Handler {
 		}
 	}
 	if d := r.Serve; d != "" {
-		return http.FileServer(http.Dir(d))
+		files := http.FileServer(http.Dir(d))
+		if len(r.Exclude) == 0 {
+			return files
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			for _, part := range strings.Split(req.URL.Path, "/") {
+				for _, exclude := range r.Exclude {
+					if exclude != "" && part == exclude {
+						http.Error(w, "Not found.", http.StatusNotFound)
+						return
+					}
+				}
+			}
+			files.ServeHTTP(w, req)
+		})
 	}
 	return nil
 }

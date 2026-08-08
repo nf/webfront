@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -31,9 +32,30 @@ func TestServer(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(testHandler))
 	defer target.Close()
 
+	serveDir, err := ioutil.TempDir("", "webfront-serve")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(serveDir)
+	for name, contents := range map[string]string{
+		"index.html":         "contents of index.html\n",
+		".git/config":        "private\n",
+		"nested/.git/config": "private\n",
+		"secret.txt":         "private\n",
+		".github/config":     "public\n",
+	} {
+		path := serveDir + "/" + name
+		if err := os.MkdirAll(path[:strings.LastIndex(path, "/")], 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := ioutil.WriteFile(path, []byte(contents), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	ruleFile := writeRules([]*Rule{
 		{Host: "example.com", Forward: target.Listener.Addr().String()},
-		{Host: "example.org", Serve: "testdata"},
+		{Host: "example.org", Serve: serveDir, Exclude: []string{".git", "secret.txt"}},
 	})
 	defer os.Remove(ruleFile)
 
@@ -50,6 +72,10 @@ func TestServer(t *testing.T) {
 		{"http://example.com/", 200, "OK"},
 		{"http://foo.example.com/", 200, "OK"},
 		{"http://example.org/", 200, "contents of index.html\n"},
+		{"http://example.org/.git/config", 404, "Not found.\n"},
+		{"http://example.org/nested/.git/config", 404, "Not found.\n"},
+		{"http://example.org/secret.txt", 404, "Not found.\n"},
+		{"http://example.org/.github/config", 200, "public\n"},
 		{"http://example.net/", 404, "Not found.\n"},
 		{"http://fooexample.com/", 404, "Not found.\n"},
 	}
